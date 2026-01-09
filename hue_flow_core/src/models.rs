@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HueConfig {
-    pub ip: String,
+    pub bridge_ip: String,
     pub username: String,
     pub client_key: String,
+    pub entertainment_group_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
