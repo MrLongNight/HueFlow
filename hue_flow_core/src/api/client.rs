@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::models::HueConfig;
 use crate::api::error::HueError;
+use crate::models::HueConfig;
+use serde::{Deserialize, Serialize};
 
 pub struct HueClient;
 
@@ -43,24 +43,25 @@ impl HueClient {
             generateclientkey: true,
         };
 
-        let url = format!("http://{}/api", ip);
-        let resp = client.post(&url)
-            .json(&body)
-            .send()
-            .await?;
+        // If 'ip' already contains "http", use it as base url (useful for mocks), otherwise assume it's just an IP
+        let url = if ip.starts_with("http") {
+            format!("{}/api", ip)
+        } else {
+            format!("http://{}/api", ip)
+        };
+
+        let resp = client.post(&url).json(&body).send().await?;
 
         // The Hue API returns a JSON array: [{"success": {...}}] or [{"error": {...}}]
         let items: Vec<RegisterResponseItem> = resp.json().await?;
 
         if let Some(item) = items.first() {
             match item {
-                RegisterResponseItem::Success { success } => {
-                    Ok(HueConfig {
-                        ip: ip.to_string(),
-                        username: success.username.clone(),
-                        client_key: success.clientkey.clone(),
-                    })
-                }
+                RegisterResponseItem::Success { success } => Ok(HueConfig {
+                    ip: ip.to_string(),
+                    username: success.username.clone(),
+                    client_key: success.clientkey.clone(),
+                }),
                 RegisterResponseItem::Error { error } => {
                     if error.error_type == 101 {
                         Err(HueError::LinkButtonNotPressed)
@@ -70,7 +71,9 @@ impl HueClient {
                 }
             }
         } else {
-            Err(HueError::ApiError("Empty response from Hue Bridge".to_string()))
+            Err(HueError::ApiError(
+                "Empty response from Hue Bridge".to_string(),
+            ))
         }
     }
 }
@@ -79,6 +82,87 @@ impl HueClient {
 mod tests {
     use super::*;
     use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn test_register_user_success() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = json!([{
+            "success": {
+                "username": "new_developer",
+                "clientkey": "someclientkey"
+            }
+        }]);
+
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let result = HueClient::register_user(&mock_server.uri(), "test_device").await;
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.username, "new_developer");
+        assert_eq!(config.client_key, "someclientkey");
+    }
+
+    #[tokio::test]
+    async fn test_register_user_link_button_not_pressed() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = json!([{
+            "error": {
+                "type": 101,
+                "address": "",
+                "description": "link button not pressed"
+            }
+        }]);
+
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let result = HueClient::register_user(&mock_server.uri(), "test_device").await;
+
+        match result {
+            Err(HueError::LinkButtonNotPressed) => (), // passed
+            _ => panic!("Expected LinkButtonNotPressed error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_user_other_error() {
+        let mock_server = MockServer::start().await;
+
+        let response_body = json!([{
+            "error": {
+                "type": 7,
+                "address": "/username",
+                "description": "invalid value, , for parameter, username"
+            }
+        }]);
+
+        Mock::given(method("POST"))
+            .and(path("/api"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response_body))
+            .mount(&mock_server)
+            .await;
+
+        let result = HueClient::register_user(&mock_server.uri(), "test_device").await;
+
+        match result {
+            Err(HueError::ApiError(desc)) => {
+                assert_eq!(desc, "invalid value, , for parameter, username")
+            }
+            _ => panic!("Expected ApiError"),
+        }
+    }
 
     #[tokio::test]
     async fn test_parse_register_success() {

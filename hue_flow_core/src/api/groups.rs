@@ -1,5 +1,5 @@
-use crate::models::{HueConfig, LightNode};
 use crate::api::error::HueError;
+use crate::models::{HueConfig, LightNode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -45,7 +45,15 @@ fn build_client() -> Result<reqwest::Client, HueError> {
 
 pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInfo>, HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups", config.ip, config.username);
+
+    // If config.ip is a full URL (mocks), use it, otherwise format it
+    let base_url = if config.ip.starts_with("http") {
+        format!("{}/api/{}", config.ip, config.username)
+    } else {
+        format!("http://{}/api/{}", config.ip, config.username)
+    };
+
+    let url = format!("{}/groups", base_url);
 
     let resp = client.get(&url).send().await?;
     let groups_map: HashMap<String, GroupListEntry> = resp.json().await?;
@@ -55,7 +63,7 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
     for (id, info) in groups_map {
         if info.group_type == "Entertainment" {
             // Fetch details for locations
-            let details_url = format!("http://{}/api/{}/groups/{}", config.ip, config.username, id);
+            let details_url = format!("{}/groups/{}", base_url, id);
             let details_resp = client.get(&details_url).send().await?;
             let details: GroupDetails = details_resp.json().await?;
 
@@ -80,18 +88,27 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
     Ok(result)
 }
 
-pub async fn set_stream_active(config: &HueConfig, group_id: &str, active: bool) -> Result<(), HueError> {
+pub async fn set_stream_active(
+    config: &HueConfig,
+    group_id: &str,
+    active: bool,
+) -> Result<(), HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups/{}", config.ip, config.username, group_id);
+
+    // If config.ip is a full URL (mocks), use it, otherwise format it
+    let base_url = if config.ip.starts_with("http") {
+        format!("{}/api/{}", config.ip, config.username)
+    } else {
+        format!("http://{}/api/{}", config.ip, config.username)
+    };
+
+    let url = format!("{}/groups/{}", base_url, group_id);
 
     let body = StreamBody {
         stream: StreamStatus { active },
     };
 
-    let resp = client.put(&url)
-        .json(&body)
-        .send()
-        .await?;
+    let resp = client.put(&url).json(&body).send().await?;
 
     // Hue API returns a list of success/error objects for PUT as well.
     // For now, we assume if 200 OK, it worked, but strictly we should parse the response body.
@@ -101,7 +118,10 @@ pub async fn set_stream_active(config: &HueConfig, group_id: &str, active: bool)
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(HueError::ApiError(format!("Failed to set stream active: {}", resp.status())))
+        Err(HueError::ApiError(format!(
+            "Failed to set stream active: {}",
+            resp.status()
+        )))
     }
 }
 
@@ -109,6 +129,8 @@ pub async fn set_stream_active(config: &HueConfig, group_id: &str, active: bool)
 mod tests {
     use super::*;
     use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn test_parse_group_details() {
@@ -122,10 +144,79 @@ mod tests {
         });
 
         let details: GroupDetails = serde_json::from_value(json).unwrap();
-        // Since I did not keep the name in the struct (commented out), I will only test locations.
-        // Wait, I commented out name in the struct definition in the previous step.
-        // I should probably uncomment it if I want to use it or verify it, or just test locations.
         assert_eq!(details.locations.len(), 2);
         assert_eq!(details.locations["1"], [0.5, 0.0, 1.0]);
+    }
+
+    #[tokio::test]
+    async fn test_get_entertainment_groups() {
+        let mock_server = MockServer::start().await;
+
+        let groups_json = json!({
+            "1": {
+                "name": "Living Room",
+                "type": "Room"
+            },
+            "2": {
+                "name": "TV Area",
+                "type": "Entertainment"
+            }
+        });
+
+        let details_json = json!({
+            "name": "TV Area",
+            "type": "Entertainment",
+            "locations": {
+                "5": [0.6, 0.0, 0.8]
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/testuser/groups"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(groups_json))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/testuser/groups/2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(details_json))
+            .mount(&mock_server)
+            .await;
+
+        let config = HueConfig {
+            ip: mock_server.uri(), // pass mock server url as ip
+            username: "testuser".to_string(),
+            client_key: "key".to_string(),
+        };
+
+        let groups = get_entertainment_groups(&config)
+            .await
+            .expect("Failed to get groups");
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].id, "2");
+        assert_eq!(groups[0].name, "TV Area");
+        assert_eq!(groups[0].lights.len(), 1);
+        assert_eq!(groups[0].lights[0].id, "5");
+    }
+
+    #[tokio::test]
+    async fn test_set_stream_active() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("PUT"))
+            .and(path("/api/testuser/groups/2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{"success": {}}])))
+            .mount(&mock_server)
+            .await;
+
+        let config = HueConfig {
+            ip: mock_server.uri(),
+            username: "testuser".to_string(),
+            client_key: "key".to_string(),
+        };
+
+        let result = set_stream_active(&config, "2", true).await;
+        assert!(result.is_ok());
     }
 }
