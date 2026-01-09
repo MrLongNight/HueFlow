@@ -1,0 +1,10 @@
+[package]
+name = "hue_flow_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spectrum-analyzer = "1.4"
+tracing = "0.1"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }

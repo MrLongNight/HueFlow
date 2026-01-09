@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "hue_flow_core",
+]
+resolver = "2"
