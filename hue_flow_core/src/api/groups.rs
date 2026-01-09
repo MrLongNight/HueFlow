@@ -45,7 +45,7 @@ fn build_client() -> Result<reqwest::Client, HueError> {
 
 pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInfo>, HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups", config.ip, config.username);
+    let url = format!("http://{}/api/{}/groups", config.bridge_ip, config.username);
 
     let resp = client.get(&url).send().await?;
     let groups_map: HashMap<String, GroupListEntry> = resp.json().await?;
@@ -55,7 +55,7 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
     for (id, info) in groups_map {
         if info.group_type == "Entertainment" {
             // Fetch details for locations
-            let details_url = format!("http://{}/api/{}/groups/{}", config.ip, config.username, id);
+            let details_url = format!("http://{}/api/{}/groups/{}", config.bridge_ip, config.username, id);
             let details_resp = client.get(&details_url).send().await?;
             let details: GroupDetails = details_resp.json().await?;
 
@@ -82,7 +82,7 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
 
 pub async fn set_stream_active(config: &HueConfig, group_id: &str, active: bool) -> Result<(), HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups/{}", config.ip, config.username, group_id);
+    let url = format!("http://{}/api/{}/groups/{}", config.bridge_ip, config.username, group_id);
 
     let body = StreamBody {
         stream: StreamStatus { active },

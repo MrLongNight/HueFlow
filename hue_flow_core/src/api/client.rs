@@ -56,9 +56,10 @@ impl HueClient {
             match item {
                 RegisterResponseItem::Success { success } => {
                     Ok(HueConfig {
-                        ip: ip.to_string(),
+                        bridge_ip: ip.to_string(),
                         username: success.username.clone(),
                         client_key: success.clientkey.clone(),
+                        entertainment_group_id: "".to_string(), // Initial empty value
                     })
                 }
                 RegisterResponseItem::Error { error } => {
