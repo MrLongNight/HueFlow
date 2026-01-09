@@ -1,0 +1,12 @@
+[package]
+name = "hue_flow_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hue_flow_core = { path = "../hue_flow_core" }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+inquire = "0.7"
+tracing-subscriber = "0.3"
+anyhow = "1"
