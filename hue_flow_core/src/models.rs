@@ -10,14 +10,9 @@ pub struct HueConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightNode {
-    pub id: u8,
+    pub id: String,
     pub x: f64,
     pub y: f64,
     pub z: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BridgeInfo {
-    pub id: String,
-    pub ip: String,
+    // Optional: active state, brightness, etc. can be added later
 }
