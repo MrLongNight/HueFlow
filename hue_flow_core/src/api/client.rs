@@ -59,6 +59,7 @@ impl HueClient {
                         ip: ip.to_string(),
                         username: success.username.clone(),
                         client_key: success.clientkey.clone(),
+                        entertainment_group_id: None,
                     })
                 }
                 RegisterResponseItem::Error { error } => {
