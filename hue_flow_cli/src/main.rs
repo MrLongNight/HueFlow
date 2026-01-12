@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hue_flow_core::api::client::HueClient;
 use hue_flow_core::api::discovery::discover_bridges;
-use hue_flow_core::api::groups::{get_entertainment_groups, set_stream_active};
+use hue_flow_core::api::groups::{flash_light, get_entertainment_groups, set_stream_active};
 use hue_flow_core::effects::{LightEffect, MultiBandEffect, PulseEffect};
 use hue_flow_core::models::HueConfig;
 use hue_flow_core::stream::dtls::HueStreamer;
@@ -36,6 +36,8 @@ enum Commands {
     },
     /// Show current configuration
     Config,
+    /// Test connection by flashing a light
+    Test,
 }
 
 #[tokio::main]
@@ -48,6 +50,7 @@ async fn main() -> Result<()> {
         Some(Commands::Setup) => run_setup().await,
         Some(Commands::Run { effect }) => run_stream(&effect).await,
         Some(Commands::Config) => show_config(),
+        Some(Commands::Test) => run_test().await,
         None => {
             // Default: check if config exists, run setup or stream
             if config_path().exists() {
@@ -345,5 +348,37 @@ async fn run_stream(effect_name: &str) -> Result<()> {
     // Cleanup
     set_stream_active(&config, &group.id, false).await.ok();
 
+    Ok(())
+}
+
+async fn run_test() -> Result<()> {
+    let config = load_config().context("No configuration found. Run 'hueflow setup' first.")?;
+    println!("🧪 Testing connection to Bridge at {}...", config.bridge_ip);
+    println!("   Using Username: {}", config.username);
+
+    println!("📂 Fetching entertainment groups...");
+    let groups = get_entertainment_groups(&config).await?;
+    let group = groups
+        .iter()
+        .find(|g| g.id == config.entertainment_group_id);
+
+    if let Some(group) = group {
+        println!("✅ Found Entertainment Group: {}", group.name);
+        println!("   Contains {} lights", group.lights.len());
+
+        if let Some(light) = group.lights.first() {
+            println!(
+                "🔦 Flashing Light ID {} (at {:.2}, {:.2}, {:.2})...",
+                light.id, light.x, light.y, light.z
+            );
+            flash_light(&config, &light.id).await?;
+            println!("✅ Light flashed successfully!");
+            println!("   (This proves REST API connectivity and permissions are working)");
+        } else {
+            println!("❌ Group has no lights!");
+        }
+    } else {
+        println!("❌ Configured entertainment group not found on bridge.");
+    }
     Ok(())
 }

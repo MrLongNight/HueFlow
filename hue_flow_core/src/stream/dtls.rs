@@ -15,6 +15,8 @@ impl Read for ConnectedUdpSocket {
 
 impl Write for ConnectedUdpSocket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Debugging packet sizes
+        println!("UDP Write: {} bytes", buf.len());
         self.0.send(buf)
     }
 
@@ -47,6 +49,9 @@ impl HueStreamer {
         // Setup OpenSSL Connector
         let mut builder = SslConnector::builder(SslMethod::dtls())
             .context("Failed to create SslConnector builder")?;
+
+        // Explicitly enable DTLS 1.2 (disable 1.0)
+        builder.set_options(openssl::ssl::SslOptions::NO_DTLSV1);
 
         // Cipher List
         builder
@@ -86,7 +91,10 @@ impl HueStreamer {
         let connector = builder.build();
 
         // Handshake
-        let ssl = connector.configure()?.into_ssl(&addr)?;
+        let mut ssl = connector.configure()?.into_ssl(&addr)?;
+
+        // Set MTU explicitly to avoid fragmentation issues
+        ssl.set_mtu(1400).ok();
 
         // Use SslStream::new to create the stream, then call connect()
         let mut stream = SslStream::new(ssl, socket_wrapper)

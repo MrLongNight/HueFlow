@@ -1,5 +1,5 @@
-use crate::models::{HueConfig, LightNode};
 use crate::api::error::HueError;
+use crate::models::{HueConfig, LightNode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -45,7 +45,10 @@ fn build_client() -> Result<reqwest::Client, HueError> {
 
 pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInfo>, HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups", config.bridge_ip, config.username);
+    let url = format!(
+        "https://{}/api/{}/groups",
+        config.bridge_ip, config.username
+    );
 
     let resp = client.get(&url).send().await?;
     let groups_map: HashMap<String, GroupListEntry> = resp.json().await?;
@@ -55,7 +58,10 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
     for (id, info) in groups_map {
         if info.group_type == "Entertainment" {
             // Fetch details for locations
-            let details_url = format!("http://{}/api/{}/groups/{}", config.bridge_ip, config.username, id);
+            let details_url = format!(
+                "https://{}/api/{}/groups/{}",
+                config.bridge_ip, config.username, id
+            );
             let details_resp = client.get(&details_url).send().await?;
             let details: GroupDetails = details_resp.json().await?;
 
@@ -80,28 +86,54 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
     Ok(result)
 }
 
-pub async fn set_stream_active(config: &HueConfig, group_id: &str, active: bool) -> Result<(), HueError> {
+pub async fn set_stream_active(
+    config: &HueConfig,
+    group_id: &str,
+    active: bool,
+) -> Result<(), HueError> {
     let client = build_client()?;
-    let url = format!("http://{}/api/{}/groups/{}", config.bridge_ip, config.username, group_id);
+    let url = format!(
+        "https://{}/api/{}/groups/{}",
+        config.bridge_ip, config.username, group_id
+    );
 
     let body = StreamBody {
         stream: StreamStatus { active },
     };
 
-    let resp = client.put(&url)
-        .json(&body)
-        .send()
-        .await?;
-
-    // Hue API returns a list of success/error objects for PUT as well.
-    // For now, we assume if 200 OK, it worked, but strictly we should parse the response body.
-    // However, the prompt didn't specify strict error handling for this part, just the action.
-    // We'll check for HTTP success.
+    let resp = client.put(&url).json(&body).send().await?;
 
     if resp.status().is_success() {
         Ok(())
     } else {
-        Err(HueError::ApiError(format!("Failed to set stream active: {}", resp.status())))
+        Err(HueError::ApiError(format!(
+            "Failed to set stream active: {}",
+            resp.status()
+        )))
+    }
+}
+
+pub async fn flash_light(config: &HueConfig, light_id: &str) -> Result<(), HueError> {
+    let client = build_client()?;
+    let url = format!(
+        "https://{}/api/{}/lights/{}/state",
+        config.bridge_ip, config.username, light_id
+    );
+
+    // Flash the light once (select effect)
+    let body = serde_json::json!({
+        "alert": "select"
+    });
+
+    let resp = client.put(&url).json(&body).send().await?;
+
+    if resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(HueError::ApiError(format!(
+            "Failed to flash light: {}",
+            resp.status()
+        )))
     }
 }
 
