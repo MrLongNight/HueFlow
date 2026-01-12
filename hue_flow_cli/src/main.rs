@@ -293,8 +293,8 @@ async fn run_stream(effect_name: &str) -> Result<()> {
     // Create channel for light states
     let (tx, rx) = mpsc::channel::<Vec<LightState>>(16);
 
-    // Clone group ID for the streaming task
-    let stream_area_id = group.id.clone();
+    // Clone stream ID (UUID) for the DTLS streaming task
+    let stream_area_id = group.stream_id.clone();
 
     // Spawn streaming task
     let _stream_handle = tokio::task::spawn_blocking(move || {
@@ -448,13 +448,13 @@ async fn run_static_test() -> Result<()> {
 
     println!("🎨 Sending WHITE frames (Brute Force Mode) for 10 seconds...");
     // Print the FIRST packet bytes for debugging
-    let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
+    let packet = hue_flow_core::stream::protocol::create_message(&group.stream_id, &light_map);
     println!("📦 Packet Hex Dump: {:02X?}", packet);
 
     let mut tick_interval = interval(Duration::from_millis(100));
     for _ in 0..100 {
         tick_interval.tick().await;
-        let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
+        let packet = hue_flow_core::stream::protocol::create_message(&group.stream_id, &light_map);
         streamer.write_all(&packet)?;
     }
 

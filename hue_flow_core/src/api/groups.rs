@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct GroupInfo {
-    pub id: String,
+    pub id: String,        // Numeric v1 API ID (for REST calls like set_stream_active)
+    pub stream_id: String, // UUID for DTLS streaming (36 characters)
     pub name: String,
     pub lights: Vec<LightNode>,
 }
@@ -19,9 +20,6 @@ struct GroupListEntry {
 
 #[derive(Deserialize)]
 struct GroupDetails {
-    // We only need locations for now, but keeping name for debug might be useful
-    // name: String,
-    // lights: Vec<String>,
     locations: HashMap<String, [f64; 3]>, // LightID -> [x, y, z]
 }
 
@@ -35,6 +33,23 @@ struct StreamBody {
     stream: StreamStatus,
 }
 
+// V2 API structures for entertainment_configuration
+#[derive(Deserialize, Debug)]
+struct V2Response<T> {
+    data: Vec<T>,
+}
+
+#[derive(Deserialize, Debug)]
+struct V2EntertainmentConfig {
+    id: String, // This is the UUID we need!
+    metadata: V2Metadata,
+}
+
+#[derive(Deserialize, Debug)]
+struct V2Metadata {
+    name: String,
+}
+
 // Helper to build a client with insecure certs (Hue Bridge standard)
 fn build_client() -> Result<reqwest::Client, HueError> {
     reqwest::Client::builder()
@@ -45,13 +60,38 @@ fn build_client() -> Result<reqwest::Client, HueError> {
 
 pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInfo>, HueError> {
     let client = build_client()?;
-    let url = format!(
+
+    // Step 1: Get v1 groups (for locations and to enable streaming)
+    let v1_url = format!(
         "https://{}/api/{}/groups",
         config.bridge_ip, config.username
     );
 
-    let resp = client.get(&url).send().await?;
+    let resp = client.get(&v1_url).send().await?;
     let groups_map: HashMap<String, GroupListEntry> = resp.json().await?;
+
+    // Step 2: Get v2 entertainment_configuration (for UUIDs)
+    let v2_url = format!(
+        "https://{}/clip/v2/resource/entertainment_configuration",
+        config.bridge_ip
+    );
+
+    let v2_resp = client
+        .get(&v2_url)
+        .header("hue-application-key", &config.username)
+        .send()
+        .await?;
+
+    let v2_configs: V2Response<V2EntertainmentConfig> = v2_resp
+        .json()
+        .await
+        .unwrap_or_else(|_| V2Response { data: vec![] });
+
+    // Build a map of name -> UUID
+    let mut name_to_uuid: HashMap<String, String> = HashMap::new();
+    for cfg in &v2_configs.data {
+        name_to_uuid.insert(cfg.metadata.name.clone(), cfg.id.clone());
+    }
 
     let mut result = Vec::new();
 
@@ -75,8 +115,19 @@ pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInf
                 });
             }
 
+            // Get the UUID from v2 API by matching the name
+            let stream_id = name_to_uuid.get(&info.name).cloned().unwrap_or_else(|| {
+                // Fallback: use the v1 ID (will likely not work, but better than panic)
+                eprintln!(
+                    "WARNING: Could not find v2 UUID for '{}', using v1 ID",
+                    info.name
+                );
+                id.clone()
+            });
+
             result.push(GroupInfo {
                 id,
+                stream_id,
                 name: info.name,
                 lights,
             });
@@ -157,9 +208,6 @@ mod tests {
         });
 
         let details: GroupDetails = serde_json::from_value(json).unwrap();
-        // Since I did not keep the name in the struct (commented out), I will only test locations.
-        // Wait, I commented out name in the struct definition in the previous step.
-        // I should probably uncomment it if I want to use it or verify it, or just test locations.
         assert_eq!(details.locations.len(), 2);
         assert_eq!(details.locations["1"], [0.5, 0.0, 1.0]);
     }
