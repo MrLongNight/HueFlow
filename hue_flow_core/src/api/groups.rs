@@ -10,11 +10,13 @@ pub struct GroupInfo {
 }
 
 // V2 API structures
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct V2Response<T> {
     data: Vec<T>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct V2EntertainmentConfig {
     id: String,
@@ -49,6 +51,7 @@ struct V2ChannelMember {
     service: Option<V2ServiceRef>,
 }
 
+#[allow(dead_code)]
 #[derive(Deserialize, Debug)]
 struct V2ServiceRef {
     rid: String,
