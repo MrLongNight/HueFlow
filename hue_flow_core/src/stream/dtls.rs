@@ -33,7 +33,9 @@ impl HueStreamer {
 
         // Setup UDP Socket
         let socket = UdpSocket::bind("0.0.0.0:0").context("Failed to bind UDP socket")?;
-        socket.connect(&addr).context("Failed to connect UDP socket")?;
+        socket
+            .connect(&addr)
+            .context("Failed to connect UDP socket")?;
 
         // Set timeouts
         socket.set_read_timeout(Some(Duration::from_secs(2))).ok();
@@ -47,7 +49,8 @@ impl HueStreamer {
             .context("Failed to create SslConnector builder")?;
 
         // Cipher List
-        builder.set_cipher_list("PSK-AES128-GCM-SHA256")
+        builder
+            .set_cipher_list("PSK-AES128-GCM-SHA256")
             .context("Failed to set cipher list")?;
 
         // PSK Callback
@@ -58,7 +61,7 @@ impl HueStreamer {
             // Identity
             let identity_bytes = username.as_bytes();
             if identity_bytes.len() > identity.len() {
-                 return Err(openssl::error::ErrorStack::get());
+                return Err(openssl::error::ErrorStack::get());
             }
             identity[..identity_bytes.len()].copy_from_slice(identity_bytes);
 
@@ -86,15 +89,21 @@ impl HueStreamer {
         let ssl = connector.configure()?.into_ssl(&addr)?;
 
         // Use SslStream::new to create the stream, then call connect()
-        let mut stream = SslStream::new(ssl, socket_wrapper).map_err(|e| anyhow::anyhow!("Failed to create SslStream: {}", e))?;
+        let mut stream = SslStream::new(ssl, socket_wrapper)
+            .map_err(|e| anyhow::anyhow!("Failed to create SslStream: {}", e))?;
 
-        stream.connect().map_err(|e| anyhow::anyhow!("DTLS Handshake failed: {}", e))?;
+        stream
+            .connect()
+            .map_err(|e| anyhow::anyhow!("DTLS Handshake failed: {}", e))?;
 
         Ok(HueStreamer { stream })
     }
 
     pub fn write_all(&mut self, buf: &[u8]) -> Result<()> {
-        self.stream.write_all(buf).context("Failed to write to DTLS stream")?;
+        self.stream
+            .write_all(buf)
+            .context("Failed to write to DTLS stream")?;
+        self.stream.flush().context("Failed to flush DTLS stream")?;
         Ok(())
     }
 }

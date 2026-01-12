@@ -250,7 +250,28 @@ async fn run_stream(effect_name: &str) -> Result<()> {
         group.lights.len()
     );
 
+    // Debug Light IDs
+    println!("   Light IDs in group:");
+    for light in &group.lights {
+        // print!("{}", light.id); if ...
+        println!(
+            "     - ID: '{}' at ({:.2}, {:.2}, {:.2})",
+            light.id, light.x, light.y, light.z
+        );
+    }
+
+    // Check if IDs are parseable as u8
+    let unparseable = group
+        .lights
+        .iter()
+        .filter(|l| l.id.parse::<u8>().is_err())
+        .count();
+    if unparseable > 0 {
+        println!("⚠️  WARNING: {} lights have IDs that represent non-u8 values! These will be ignored by the current effect implementation.", unparseable);
+    }
+
     println!("📡 Activating stream mode...");
+
     set_stream_active(&config, &group.id, true).await?;
 
     println!("🔒 Establishing DTLS connection...");
@@ -294,7 +315,7 @@ async fn run_stream(effect_name: &str) -> Result<()> {
             bass: (phase.sin() * 0.5 + 0.5).abs(),
             mids: ((phase * 1.5).sin() * 0.5 + 0.5).abs(),
             highs: ((phase * 2.0).sin() * 0.5 + 0.5).abs(),
-            energy: ((phase * 0.5).sin() * 0.5 + 0.5).abs(),
+            energy: 1.0, // Full brightness for testing
         };
 
         // Update effect
@@ -305,6 +326,15 @@ async fn run_stream(effect_name: &str) -> Result<()> {
             .into_iter()
             .map(|(id, (r, g, b))| LightState { id, r, g, b })
             .collect();
+
+        // Debug output (1% chance or every X frames) - simple log
+        if phase.fract() < 0.1 && !states.is_empty() {
+            let first = &states[0];
+            println!(
+                "Values: Bass={:.2} -> Light {}: RGB({},{},{})",
+                mock_audio.bass, first.id, first.r, first.g, first.b
+            );
+        }
 
         // Send to streamer
         if tx.send(states).await.is_err() {
