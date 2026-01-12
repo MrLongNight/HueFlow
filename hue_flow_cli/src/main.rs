@@ -255,6 +255,8 @@ async fn run_stream(effect_name: &str) -> Result<()> {
         group.name,
         group.lights.len()
     );
+    println!("   Stream ID (UUID): {}", group.stream_id);
+    println!("   REST API ID: {}", group.id);
 
     // Debug Light IDs
     println!("   Light IDs in group:");
