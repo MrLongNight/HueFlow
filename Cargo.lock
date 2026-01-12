@@ -461,6 +461,8 @@ dependencies = [
  "clap",
  "hue_flow_core",
  "inquire",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
 ]
