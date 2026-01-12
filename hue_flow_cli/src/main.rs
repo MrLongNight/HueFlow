@@ -38,7 +38,7 @@ enum Commands {
     Config,
     /// Test connection by flashing a light
     Test,
-    /// Send a static DTLS packet (Red, Full Brightness)
+    /// Send a static DTLS packet (Green, Index-based)
     Static,
 }
 
@@ -392,7 +392,7 @@ async fn run_static_test() -> Result<()> {
     let config = load_config()?;
     let config_arc = Arc::new(config.clone());
 
-    println!("🧪 Static DTLS Test (RED Color) + Monitor...");
+    println!("🧪 Static DTLS Test (GREEN Pattern) + Monitor...");
     let groups = get_entertainment_groups(&config).await?;
     let group = groups
         .iter()
@@ -409,6 +409,7 @@ async fn run_static_test() -> Result<()> {
     let config_monitor = config_arc.clone();
 
     let monitor_handle = tokio::spawn(async move {
+        // Use native-tls by using simple builder
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -424,11 +425,7 @@ async fn run_static_test() -> Result<()> {
                     if let Some(stream) = json.get("stream") {
                         println!("   [Monitor] Stream Status: {}", stream);
                     } else {
-                        println!("   [Monitor] 'stream' field missing in response!");
-                        println!(
-                            "   [Monitor] Full response keys: {:?}",
-                            json.as_object().map(|o| o.keys().collect::<Vec<_>>())
-                        );
+                        // println!("   [Monitor] 'stream' field missing or error");
                     }
                 }
             }
@@ -441,28 +438,21 @@ async fn run_static_test() -> Result<()> {
         HueStreamer::connect(&config.bridge_ip, &config.username, &config.client_key)?;
 
     let mut light_map = HashMap::new();
-    for node in &group.lights {
-        if let Ok(id) = node.id.parse::<u8>() {
-            light_map.insert(id, (255, 0, 0)); // RED
-        }
+    // Try sending Channel Index (0..N) instead of Light ID
+    for (i, _node) in group.lights.iter().enumerate() {
+        light_map.insert(i as u8, (0, 255, 0)); // GREEN
     }
 
-    println!("🎨 Sending RED frames for 10 seconds...");
+    println!("🎨 Sending GREEN frames (Channel Index Mode) for 10 seconds...");
     // Print the FIRST packet bytes for debugging
     let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
     println!("📦 Packet Hex Dump: {:02X?}", packet);
 
     let mut tick_interval = interval(Duration::from_millis(100));
-    for i in 0..100 {
+    for _ in 0..100 {
         tick_interval.tick().await;
-        // Re-create packet to increment sequence number
         let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
         streamer.write_all(&packet)?;
-
-        // No inline logging needed, monitor does it
-        if i % 10 == 0 {
-            // println!("   > Sent 10 frames");
-        }
     }
 
     monitor_handle.abort();
