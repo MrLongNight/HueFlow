@@ -38,7 +38,7 @@ enum Commands {
     Config,
     /// Test connection by flashing a light
     Test,
-    /// Send a static DTLS packet (Green, Index-based)
+    /// Send a static DTLS packet (White, Brute Force IDs)
     Static,
 }
 
@@ -293,10 +293,13 @@ async fn run_stream(effect_name: &str) -> Result<()> {
     // Create channel for light states
     let (tx, rx) = mpsc::channel::<Vec<LightState>>(16);
 
+    // Clone group ID for the streaming task
+    let stream_area_id = group.id.clone();
+
     // Spawn streaming task
     let _stream_handle = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
-        rt.block_on(run_stream_loop(streamer, rx));
+        rt.block_on(run_stream_loop(streamer, rx, &stream_area_id));
     });
 
     // Create effect
@@ -392,7 +395,7 @@ async fn run_static_test() -> Result<()> {
     let config = load_config()?;
     let config_arc = Arc::new(config.clone());
 
-    println!("🧪 Static DTLS Test (GREEN Pattern) + Monitor...");
+    println!("🧪 Static DTLS Test (WHITE Brute Force IDs 0-50) + Monitor...");
     let groups = get_entertainment_groups(&config).await?;
     let group = groups
         .iter()
@@ -424,8 +427,6 @@ async fn run_static_test() -> Result<()> {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                     if let Some(stream) = json.get("stream") {
                         println!("   [Monitor] Stream Status: {}", stream);
-                    } else {
-                        // println!("   [Monitor] 'stream' field missing or error");
                     }
                 }
             }
@@ -438,20 +439,22 @@ async fn run_static_test() -> Result<()> {
         HueStreamer::connect(&config.bridge_ip, &config.username, &config.client_key)?;
 
     let mut light_map = HashMap::new();
-    // Try sending Channel Index (0..N) instead of Light ID
-    for (i, _node) in group.lights.iter().enumerate() {
-        light_map.insert(i as u8, (0, 255, 0)); // GREEN
+
+    // Brute Force: Send WHITE (Full Brightness) to ALL possible IDs (0-50)
+    // Covers both Channel Index (0..9) and Light IDs (e.g. 3, 6, 30)
+    for i in 0..50 {
+        light_map.insert(i as u8, (255, 255, 255));
     }
 
-    println!("🎨 Sending GREEN frames (Channel Index Mode) for 10 seconds...");
+    println!("🎨 Sending WHITE frames (Brute Force Mode) for 10 seconds...");
     // Print the FIRST packet bytes for debugging
-    let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
+    let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
     println!("📦 Packet Hex Dump: {:02X?}", packet);
 
     let mut tick_interval = interval(Duration::from_millis(100));
     for _ in 0..100 {
         tick_interval.tick().await;
-        let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
+        let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
         streamer.write_all(&packet)?;
     }
 
