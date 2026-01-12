@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
-use crate::models::HueConfig;
 use crate::api::error::HueError;
+use crate::models::HueConfig;
+use serde::{Deserialize, Serialize};
 
 pub struct HueClient;
 
@@ -43,11 +43,8 @@ impl HueClient {
             generateclientkey: true,
         };
 
-        let url = format!("http://{}/api", ip);
-        let resp = client.post(&url)
-            .json(&body)
-            .send()
-            .await?;
+        let url = format!("https://{}/api", ip);
+        let resp = client.post(&url).json(&body).send().await?;
 
         // The Hue API returns a JSON array: [{"success": {...}}] or [{"error": {...}}]
         let items: Vec<RegisterResponseItem> = resp.json().await?;
@@ -71,7 +68,9 @@ impl HueClient {
                 }
             }
         } else {
-            Err(HueError::ApiError("Empty response from Hue Bridge".to_string()))
+            Err(HueError::ApiError(
+                "Empty response from Hue Bridge".to_string(),
+            ))
         }
     }
 }

@@ -173,26 +173,26 @@ async fn continue_registration(bridge_ip: &str) -> Result<()> {
     println!("🔐 Registering with bridge...");
 
     let mut config = None;
-    for attempt in 1..=5 {
+    for attempt in 1..=10 {
         match HueClient::register_user(&bridge_ip, "hueflow#device").await {
             Ok(cfg) => {
                 config = Some(cfg);
                 break;
             }
             Err(hue_flow_core::api::error::HueError::LinkButtonNotPressed) => {
-                if attempt < 5 {
+                if attempt < 10 {
                     println!(
-                        "   Link button not pressed. Retrying in 2 seconds... ({}/5)",
+                        "   Link button not pressed. Retrying in 5 seconds... ({}/10)",
                         attempt
                     );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
             Err(e) => return Err(e.into()),
         }
     }
 
-    let mut config = config.context("Failed to register after 5 attempts. Please try again.")?;
+    let mut config = config.context("Failed to register after 10 attempts. Please try again.")?;
     println!("✅ Registered successfully!");
 
     println!();
