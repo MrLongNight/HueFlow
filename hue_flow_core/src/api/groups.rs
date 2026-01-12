@@ -103,14 +103,17 @@ pub async fn set_stream_active(
 
     let resp = client.put(&url).json(&body).send().await?;
 
-    if resp.status().is_success() {
-        Ok(())
-    } else {
-        Err(HueError::ApiError(format!(
-            "Failed to set stream active: {}",
-            resp.status()
-        )))
+    let response_text = resp.text().await?;
+
+    // Check if response contains error
+    if response_text.contains("\"error\"") {
+        return Err(HueError::ApiError(format!(
+            "Failed to activate stream: {}",
+            response_text
+        )));
     }
+
+    Ok(())
 }
 
 pub async fn flash_light(config: &HueConfig, light_id: &str) -> Result<(), HueError> {
