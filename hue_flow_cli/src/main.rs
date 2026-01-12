@@ -38,7 +38,7 @@ enum Commands {
     Config,
     /// Test connection by flashing a light
     Test,
-    /// Send a static DTLS packet (White, Brute Force IDs)
+    /// Send a static DTLS packet for debugging
     Static,
 }
 
@@ -55,7 +55,6 @@ async fn main() -> Result<()> {
         Some(Commands::Test) => run_test().await,
         Some(Commands::Static) => run_static_test().await,
         None => {
-            // Default: check if config exists, run setup or stream
             if config_path().exists() {
                 println!("🎨 HueFlow - Starting entertainment stream...");
                 println!("   Use 'hueflow setup' to reconfigure");
@@ -92,7 +91,11 @@ fn show_config() -> Result<()> {
         Ok(config) => {
             println!("📋 Current Configuration:");
             println!("   Bridge IP: {}", config.bridge_ip);
-            println!("   Username: {}", config.username);
+            println!("   Username (hue-application-key): {}", config.username);
+            println!(
+                "   Application ID (PSK Identity): {}",
+                config.application_id
+            );
             println!("   Entertainment Group: {}", config.entertainment_group_id);
         }
         Err(_) => {
@@ -125,10 +128,8 @@ async fn run_setup() -> Result<()> {
         }
     };
 
-    // Show all discovered bridges with reachability status
     println!("Found {} bridge(s):", bridges.len());
     for (i, bridge) in bridges.iter().enumerate() {
-        // First bridge in list is reachable (sorted by reachability)
         let status = if i == 0 {
             "✅ reachable"
         } else {
@@ -144,7 +145,6 @@ async fn run_setup() -> Result<()> {
     }
     println!();
 
-    // Let user select or enter manually
     let mut options: Vec<String> = bridges
         .iter()
         .map(|b| format!("{} ({})", b.ip, &b.id[..8.min(b.id.len())]))
@@ -156,7 +156,6 @@ async fn run_setup() -> Result<()> {
     let bridge_ip = if selection == "Enter IP manually..." {
         inquire::Text::new("Enter your Hue Bridge IP address:").prompt()?
     } else {
-        // Extract IP from selection
         selection
             .split(' ')
             .next()
@@ -200,6 +199,13 @@ async fn continue_registration(bridge_ip: &str) -> Result<()> {
 
     let mut config = config.context("Failed to register after 10 attempts. Please try again.")?;
     println!("✅ Registered successfully!");
+    println!("   Username: {}", config.username);
+
+    // Fetch the application_id (required for DTLS PSK Identity)
+    println!("🔑 Fetching application ID...");
+    let app_id = HueClient::get_application_id(&config.bridge_ip, &config.username).await?;
+    config.application_id = app_id.clone();
+    println!("   Application ID: {}", app_id);
 
     println!();
     println!("🎭 Loading entertainment groups...");
@@ -214,7 +220,7 @@ async fn continue_registration(bridge_ip: &str) -> Result<()> {
 
     let group_names: Vec<String> = groups
         .iter()
-        .map(|g| format!("{} ({} lights)", g.name, g.lights.len()))
+        .map(|g| format!("{} ({} channels)", g.name, g.lights.len()))
         .collect();
     let selection = Select::new("Select an entertainment group:", group_names).prompt()?;
 
@@ -230,7 +236,7 @@ async fn continue_registration(bridge_ip: &str) -> Result<()> {
     println!();
     println!("✅ Setup complete! Configuration saved to {}", CONFIG_FILE);
     println!(
-        "   Selected group: {} with {} lights",
+        "   Selected group: {} with {} channels",
         selected_group.name,
         selected_group.lights.len()
     );
@@ -243,6 +249,12 @@ async fn continue_registration(bridge_ip: &str) -> Result<()> {
 async fn run_stream(effect_name: &str) -> Result<()> {
     let config = load_config().context("No configuration found. Run 'hueflow setup' first.")?;
 
+    // Validate that application_id is set
+    if config.application_id.is_empty() {
+        println!("⚠️  Application ID not set. Run 'hueflow setup' to reconfigure.");
+        return Ok(());
+    }
+
     println!("🎭 Loading entertainment group...");
     let groups = get_entertainment_groups(&config).await?;
     let group = groups
@@ -251,40 +263,36 @@ async fn run_stream(effect_name: &str) -> Result<()> {
         .context("Configured entertainment group not found")?;
 
     println!(
-        "   Group: {} with {} lights",
+        "   Group: {} with {} channels",
         group.name,
         group.lights.len()
     );
-    println!("   Stream ID (UUID): {}", group.stream_id);
-    println!("   REST API ID: {}", group.id);
+    println!("   Entertainment Config ID (UUID): {}", group.id);
+    println!(
+        "   Application ID (PSK Identity): {}",
+        config.application_id
+    );
 
-    // Debug Light IDs
-    println!("   Light IDs in group:");
+    // Debug Channel Info
+    println!("   Channels:");
     for light in &group.lights {
-        // print!("{}", light.id); if ...
         println!(
-            "     - ID: '{}' at ({:.2}, {:.2}, {:.2})",
-            light.id, light.x, light.y, light.z
+            "     - Channel {}: at ({:.2}, {:.2}, {:.2})",
+            light.channel_id, light.x, light.y, light.z
         );
     }
 
-    // Check if IDs are parseable as u8
-    let unparseable = group
-        .lights
-        .iter()
-        .filter(|l| l.id.parse::<u8>().is_err())
-        .count();
-    if unparseable > 0 {
-        println!("⚠️  WARNING: {} lights have IDs that represent non-u8 values! These will be ignored by the current effect implementation.", unparseable);
-    }
-
-    println!("📡 Activating stream mode...");
-
+    println!("📡 Activating stream mode (v2 API)...");
     set_stream_active(&config, &group.id, true).await?;
 
     println!("🔒 Establishing DTLS connection...");
-    let streamer = HueStreamer::connect(&config.bridge_ip, &config.username, &config.client_key)
-        .context("Failed to establish DTLS connection")?;
+    // Use application_id as PSK Identity (NOT username!)
+    let streamer = HueStreamer::connect(
+        &config.bridge_ip,
+        &config.application_id,
+        &config.client_key,
+    )
+    .context("Failed to establish DTLS connection")?;
 
     println!("✅ Connected!");
     println!();
@@ -295,8 +303,8 @@ async fn run_stream(effect_name: &str) -> Result<()> {
     // Create channel for light states
     let (tx, rx) = mpsc::channel::<Vec<LightState>>(16);
 
-    // Clone stream ID (UUID) for the DTLS streaming task
-    let stream_area_id = group.stream_id.clone();
+    // Clone IDs for the streaming task
+    let stream_area_id = group.id.clone();
 
     // Spawn streaming task
     let _stream_handle = tokio::task::spawn_blocking(move || {
@@ -310,7 +318,7 @@ async fn run_stream(effect_name: &str) -> Result<()> {
         _ => Box::new(MultiBandEffect::new()),
     };
 
-    // Convert LightNodes to our format
+    // Convert LightNodes to our format (using channel_id!)
     let nodes = group.lights.clone();
 
     // Simulation loop with mock audio data
@@ -320,40 +328,43 @@ async fn run_stream(effect_name: &str) -> Result<()> {
     loop {
         tick_interval.tick().await;
 
-        // Generate mock audio spectrum (simulated bass/mids/highs)
+        // Generate mock audio spectrum
         phase += 0.1;
         let mock_audio = hue_flow_core::audio_interface::AudioSpectrum {
             bass: (phase.sin() * 0.5 + 0.5).abs(),
             mids: ((phase * 1.5).sin() * 0.5 + 0.5).abs(),
             highs: ((phase * 2.0).sin() * 0.5 + 0.5).abs(),
-            energy: 1.0, // Full brightness for testing
+            energy: 1.0,
         };
 
         // Update effect
         let colors = effect.update(&mock_audio, &nodes);
 
-        // Convert to LightState
+        // Convert to LightState - NOTE: id is now channel_id!
         let states: Vec<LightState> = colors
             .into_iter()
-            .map(|(id, (r, g, b))| LightState { id, r, g, b })
+            .map(|(channel_id, (r, g, b))| LightState {
+                id: channel_id,
+                r,
+                g,
+                b,
+            })
             .collect();
 
-        // Debug output (1% chance or every X frames) - simple log
+        // Debug output
         if phase.fract() < 0.1 && !states.is_empty() {
             let first = &states[0];
             println!(
-                "Values: Bass={:.2} -> Light {}: RGB({},{},{})",
+                "Values: Bass={:.2} -> Channel {}: RGB({},{},{})",
                 mock_audio.bass, first.id, first.r, first.g, first.b
             );
         }
 
-        // Send to streamer
         if tx.send(states).await.is_err() {
-            break; // Channel closed
+            break;
         }
     }
 
-    // Cleanup
     set_stream_active(&config, &group.id, false).await.ok();
 
     Ok(())
@@ -363,6 +374,7 @@ async fn run_test() -> Result<()> {
     let config = load_config().context("No configuration found. Run 'hueflow setup' first.")?;
     println!("🧪 Testing connection to Bridge at {}...", config.bridge_ip);
     println!("   Using Username: {}", config.username);
+    println!("   Application ID: {}", config.application_id);
 
     println!("📂 Fetching entertainment groups...");
     let groups = get_entertainment_groups(&config).await?;
@@ -372,18 +384,19 @@ async fn run_test() -> Result<()> {
 
     if let Some(group) = group {
         println!("✅ Found Entertainment Group: {}", group.name);
-        println!("   Contains {} lights", group.lights.len());
+        println!("   Contains {} channels", group.lights.len());
 
         if let Some(light) = group.lights.first() {
             println!(
-                "🔦 Flashing Light ID {} (at {:.2}, {:.2}, {:.2})...",
-                light.id, light.x, light.y, light.z
+                "🔦 Flashing Light (Channel {} at {:.2}, {:.2}, {:.2})...",
+                light.channel_id, light.x, light.y, light.z
             );
+            // Note: flash_light still uses REST API light ID, not channel_id
+            // This may not work correctly if the light ID isn't available
             flash_light(&config, &light.id).await?;
             println!("✅ Light flashed successfully!");
-            println!("   (This proves REST API connectivity and permissions are working)");
         } else {
-            println!("❌ Group has no lights!");
+            println!("❌ Group has no channels!");
         }
     } else {
         println!("❌ Configured entertainment group not found on bridge.");
@@ -397,16 +410,36 @@ async fn run_static_test() -> Result<()> {
     let config = load_config()?;
     let config_arc = Arc::new(config.clone());
 
-    println!("🧪 Static DTLS Test (WHITE Brute Force IDs 0-50) + Monitor...");
+    if config.application_id.is_empty() {
+        println!("⚠️  Application ID not set. Run 'hueflow setup' to reconfigure.");
+        return Ok(());
+    }
+
+    println!("🧪 Static DTLS Test (Correct Protocol)...");
+    println!(
+        "   Application ID (PSK Identity): {}",
+        config.application_id
+    );
+
     let groups = get_entertainment_groups(&config).await?;
     let group = groups
         .iter()
         .find(|g| g.id == config.entertainment_group_id)
         .context("Group not found")?;
 
-    println!("📡 Activating stream (Resetting)...");
+    println!("   Entertainment Config UUID: {}", group.id);
+    println!(
+        "   Channels: {:?}",
+        group
+            .lights
+            .iter()
+            .map(|l| l.channel_id)
+            .collect::<Vec<_>>()
+    );
+
+    println!("📡 Activating stream (v2 API)...");
     set_stream_active(&config, &group.id, false).await.ok();
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     set_stream_active(&config, &group.id, true).await?;
 
     // Spawn Monitor Task
@@ -414,7 +447,6 @@ async fn run_static_test() -> Result<()> {
     let config_monitor = config_arc.clone();
 
     let monitor_handle = tokio::spawn(async move {
-        // Use native-tls by using simple builder
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()
@@ -422,13 +454,23 @@ async fn run_static_test() -> Result<()> {
 
         loop {
             let url = format!(
-                "https://{}/api/{}/groups/{}",
-                config_monitor.bridge_ip, config_monitor.username, group_id
+                "https://{}/clip/v2/resource/entertainment_configuration/{}",
+                config_monitor.bridge_ip, group_id
             );
-            if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(resp) = client
+                .get(&url)
+                .header("hue-application-key", &config_monitor.username)
+                .send()
+                .await
+            {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(stream) = json.get("stream") {
-                        println!("   [Monitor] Stream Status: {}", stream);
+                    if let Some(data) = json.get("data").and_then(|d| d.get(0)) {
+                        if let Some(status) = data.get("status") {
+                            println!("   [Monitor] Status: {}", status);
+                        }
+                        if let Some(streamer) = data.get("active_streamer") {
+                            println!("   [Monitor] Active Streamer: {}", streamer);
+                        }
                     }
                 }
             }
@@ -436,27 +478,41 @@ async fn run_static_test() -> Result<()> {
         }
     });
 
-    println!("🔒 Connecting DTLS...");
-    let mut streamer =
-        HueStreamer::connect(&config.bridge_ip, &config.username, &config.client_key)?;
+    println!("🔒 Connecting DTLS (with correct PSK Identity)...");
+    let mut streamer = HueStreamer::connect(
+        &config.bridge_ip,
+        &config.application_id,
+        &config.client_key,
+    )?;
 
+    // Build channel map with correct channel_ids
     let mut light_map = HashMap::new();
-
-    // Brute Force: Send WHITE (Full Brightness) to ALL possible IDs (0-50)
-    // Covers both Channel Index (0..9) and Light IDs (e.g. 3, 6, 30)
-    for i in 0..50 {
-        light_map.insert(i as u8, (255, 255, 255));
+    for light in &group.lights {
+        // Use channel_id (0, 1, 2...) and set to bright RED
+        light_map.insert(light.channel_id, (255, 0, 0));
     }
 
-    println!("🎨 Sending WHITE frames (Brute Force Mode) for 10 seconds...");
-    // Print the FIRST packet bytes for debugging
-    let packet = hue_flow_core::stream::protocol::create_message(&group.stream_id, &light_map);
-    println!("📦 Packet Hex Dump: {:02X?}", packet);
+    println!(
+        "🎨 Sending RED frames to channels {:?} for 10 seconds...",
+        group
+            .lights
+            .iter()
+            .map(|l| l.channel_id)
+            .collect::<Vec<_>>()
+    );
+
+    // Print the first packet for debugging
+    let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
+    println!("📦 Packet Size: {} bytes", packet.len());
+    println!(
+        "📦 Header (first 52 bytes): {:02X?}",
+        &packet[..52.min(packet.len())]
+    );
 
     let mut tick_interval = interval(Duration::from_millis(100));
     for _ in 0..100 {
         tick_interval.tick().await;
-        let packet = hue_flow_core::stream::protocol::create_message(&group.stream_id, &light_map);
+        let packet = hue_flow_core::stream::protocol::create_message(&group.id, &light_map);
         streamer.write_all(&packet)?;
     }
 

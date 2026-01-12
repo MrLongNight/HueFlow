@@ -15,7 +15,7 @@ impl Read for ConnectedUdpSocket {
 
 impl Write for ConnectedUdpSocket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Debugging packet sizes
+        // Debug output (remove in production)
         println!("UDP Write: {} bytes", buf.len());
         self.0.send(buf)
     }
@@ -30,7 +30,13 @@ pub struct HueStreamer {
 }
 
 impl HueStreamer {
-    pub fn connect(ip: &str, username: &str, psk: &str) -> Result<Self> {
+    /// Connects to the Hue Bridge via DTLS for entertainment streaming.
+    ///
+    /// # Arguments
+    /// * `ip` - Bridge IP address
+    /// * `application_id` - The hue-application-id (PSK Identity) from /auth/v1
+    /// * `client_key` - The client key (PSK) from registration (hex string)
+    pub fn connect(ip: &str, application_id: &str, client_key: &str) -> Result<Self> {
         let addr = format!("{}:2100", ip);
 
         // Setup UDP Socket
@@ -53,28 +59,30 @@ impl HueStreamer {
         // Explicitly enable DTLS 1.2 (disable 1.0)
         builder.set_options(openssl::ssl::SslOptions::NO_DTLSV1);
 
-        // Cipher List
+        // Cipher List - as specified in Hue documentation
         builder
             .set_cipher_list("PSK-AES128-GCM-SHA256")
             .context("Failed to set cipher list")?;
 
         // PSK Callback
-        let username = username.to_string();
-        let psk_hex = psk.to_string();
+        // IMPORTANT: PSK Identity = hue-application-id (NOT username!)
+        let psk_identity = application_id.to_string();
+        let psk_hex = client_key.to_string();
 
         builder.set_psk_client_callback(move |_, _, identity, psk_buf| {
-            // Identity
-            let identity_bytes = username.as_bytes();
+            // Set Identity (hue-application-id as ASCII/UTF-8 string)
+            let identity_bytes = psk_identity.as_bytes();
             if identity_bytes.len() > identity.len() {
                 return Err(openssl::error::ErrorStack::get());
             }
             identity[..identity_bytes.len()].copy_from_slice(identity_bytes);
 
+            // Null-terminate if space allows
             if identity_bytes.len() < identity.len() {
                 identity[identity_bytes.len()] = 0;
             }
 
-            // PSK
+            // Set PSK (client_key decoded from hex)
             let key_bytes = match hex::decode(&psk_hex) {
                 Ok(k) => k,
                 Err(_) => return Err(openssl::error::ErrorStack::get()),
@@ -96,7 +104,7 @@ impl HueStreamer {
         // Set MTU explicitly to avoid fragmentation issues
         ssl.set_mtu(1400).ok();
 
-        // Use SslStream::new to create the stream, then call connect()
+        // Create and connect SSL stream
         let mut stream = SslStream::new(ssl, socket_wrapper)
             .map_err(|e| anyhow::anyhow!("Failed to create SslStream: {}", e))?;
 

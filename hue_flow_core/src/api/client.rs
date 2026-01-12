@@ -31,9 +31,10 @@ enum RegisterResponseItem {
 }
 
 impl HueClient {
+    /// Registers a new application with the Hue Bridge.
+    /// Returns a HueConfig with username and client_key.
+    /// Note: application_id must be fetched separately via get_application_id().
     pub async fn register_user(ip: &str, devicename: &str) -> Result<HueConfig, HueError> {
-        // Use danger_accept_invalid_certs because Hue Bridge uses self-signed certs
-        // In a production environment, we might want to pin the certificate or use a CA if available.
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .build()?;
@@ -46,7 +47,6 @@ impl HueClient {
         let url = format!("https://{}/api", ip);
         let resp = client.post(&url).json(&body).send().await?;
 
-        // The Hue API returns a JSON array: [{"success": {...}}] or [{"error": {...}}]
         let items: Vec<RegisterResponseItem> = resp.json().await?;
 
         if let Some(item) = items.first() {
@@ -56,7 +56,8 @@ impl HueClient {
                         bridge_ip: ip.to_string(),
                         username: success.username.clone(),
                         client_key: success.clientkey.clone(),
-                        entertainment_group_id: "".to_string(), // Initial empty value
+                        application_id: String::new(), // Must be fetched via get_application_id()
+                        entertainment_group_id: String::new(),
                     })
                 }
                 RegisterResponseItem::Error { error } => {
@@ -72,6 +73,43 @@ impl HueClient {
                 "Empty response from Hue Bridge".to_string(),
             ))
         }
+    }
+
+    /// Fetches the hue-application-id from the bridge.
+    /// This ID is required as the PSK Identity for DTLS streaming.
+    ///
+    /// The bridge returns the application ID in the response header "hue-application-id"
+    /// when calling GET /auth/v1 with the hue-application-key header.
+    pub async fn get_application_id(ip: &str, username: &str) -> Result<String, HueError> {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+
+        let url = format!("https://{}/auth/v1", ip);
+        let resp = client
+            .get(&url)
+            .header("hue-application-key", username)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(HueError::ApiError(format!(
+                "Failed to get application ID: HTTP {}",
+                resp.status()
+            )));
+        }
+
+        // The application ID is in the response header
+        let app_id = resp
+            .headers()
+            .get("hue-application-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                HueError::ApiError("Missing hue-application-id header in response".to_string())
+            })?;
+
+        Ok(app_id)
     }
 }
 

@@ -1,39 +1,15 @@
 use crate::api::error::HueError;
 use crate::models::{HueConfig, LightNode};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct GroupInfo {
-    pub id: String,        // Numeric v1 API ID (for REST calls like set_stream_active)
-    pub stream_id: String, // UUID for DTLS streaming (36 characters)
+    pub id: String, // v2 API UUID (for stream activation and DTLS streaming)
     pub name: String,
     pub lights: Vec<LightNode>,
 }
 
-#[derive(Deserialize)]
-struct GroupListEntry {
-    name: String,
-    #[serde(rename = "type")]
-    group_type: String,
-}
-
-#[derive(Deserialize)]
-struct GroupDetails {
-    locations: HashMap<String, [f64; 3]>, // LightID -> [x, y, z]
-}
-
-#[derive(Serialize)]
-struct StreamStatus {
-    active: bool,
-}
-
-#[derive(Serialize)]
-struct StreamBody {
-    stream: StreamStatus,
-}
-
-// V2 API structures for entertainment_configuration
+// V2 API structures
 #[derive(Deserialize, Debug)]
 struct V2Response<T> {
     data: Vec<T>,
@@ -41,13 +17,47 @@ struct V2Response<T> {
 
 #[derive(Deserialize, Debug)]
 struct V2EntertainmentConfig {
-    id: String, // This is the UUID we need!
+    id: String,
     metadata: V2Metadata,
+    channels: Vec<V2Channel>,
+    #[serde(default)]
+    status: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct V2Metadata {
     name: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct V2Channel {
+    channel_id: u8,
+    position: V2Position,
+    #[serde(default)]
+    members: Vec<V2ChannelMember>,
+}
+
+#[derive(Deserialize, Debug)]
+struct V2Position {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+#[derive(Deserialize, Debug, Default)]
+struct V2ChannelMember {
+    service: Option<V2ServiceRef>,
+}
+
+#[derive(Deserialize, Debug)]
+struct V2ServiceRef {
+    rid: String,
+    rtype: String,
+}
+
+#[derive(Serialize)]
+struct StreamAction {
+    action: String,
 }
 
 // Helper to build a client with insecure certs (Hue Bridge standard)
@@ -58,108 +68,111 @@ fn build_client() -> Result<reqwest::Client, HueError> {
         .map_err(HueError::Network)
 }
 
+/// Fetches entertainment configurations from the v2 API.
+/// Returns groups with proper channel_id mapping for streaming.
 pub async fn get_entertainment_groups(config: &HueConfig) -> Result<Vec<GroupInfo>, HueError> {
     let client = build_client()?;
 
-    // Step 1: Get v1 groups (for locations and to enable streaming)
-    let v1_url = format!(
-        "https://{}/api/{}/groups",
-        config.bridge_ip, config.username
-    );
-
-    let resp = client.get(&v1_url).send().await?;
-    let groups_map: HashMap<String, GroupListEntry> = resp.json().await?;
-
-    // Step 2: Get v2 entertainment_configuration (for UUIDs)
-    let v2_url = format!(
+    // Use v2 API to get entertainment configurations with channels
+    let url = format!(
         "https://{}/clip/v2/resource/entertainment_configuration",
         config.bridge_ip
     );
 
-    let v2_resp = client
-        .get(&v2_url)
+    let resp = client
+        .get(&url)
         .header("hue-application-key", &config.username)
         .send()
         .await?;
 
-    let v2_configs: V2Response<V2EntertainmentConfig> = v2_resp
-        .json()
-        .await
-        .unwrap_or_else(|_| V2Response { data: vec![] });
-
-    // Build a map of name -> UUID
-    let mut name_to_uuid: HashMap<String, String> = HashMap::new();
-    for cfg in &v2_configs.data {
-        name_to_uuid.insert(cfg.metadata.name.clone(), cfg.id.clone());
+    if !resp.status().is_success() {
+        return Err(HueError::ApiError(format!(
+            "Failed to get entertainment configurations: HTTP {}",
+            resp.status()
+        )));
     }
+
+    let v2_response: V2Response<V2EntertainmentConfig> = resp.json().await?;
 
     let mut result = Vec::new();
 
-    for (id, info) in groups_map {
-        if info.group_type == "Entertainment" {
-            // Fetch details for locations
-            let details_url = format!(
-                "https://{}/api/{}/groups/{}",
-                config.bridge_ip, config.username, id
-            );
-            let details_resp = client.get(&details_url).send().await?;
-            let details: GroupDetails = details_resp.json().await?;
+    for cfg in v2_response.data {
+        let mut lights = Vec::new();
 
-            let mut lights = Vec::new();
-            for (light_id, loc) in details.locations {
-                lights.push(LightNode {
-                    id: light_id,
-                    x: loc[0],
-                    y: loc[1],
-                    z: loc[2],
-                });
-            }
+        for channel in &cfg.channels {
+            // Get light ID from channel members if available
+            let light_id = channel
+                .members
+                .first()
+                .and_then(|m| m.service.as_ref())
+                .map(|s| s.rid.clone())
+                .unwrap_or_else(|| format!("channel_{}", channel.channel_id));
 
-            // Get the UUID from v2 API by matching the name
-            let stream_id = name_to_uuid.get(&info.name).cloned().unwrap_or_else(|| {
-                // Fallback: use the v1 ID (will likely not work, but better than panic)
-                eprintln!(
-                    "WARNING: Could not find v2 UUID for '{}', using v1 ID",
-                    info.name
-                );
-                id.clone()
-            });
-
-            result.push(GroupInfo {
-                id,
-                stream_id,
-                name: info.name,
-                lights,
+            lights.push(LightNode {
+                id: light_id,
+                channel_id: channel.channel_id,
+                x: channel.position.x,
+                y: channel.position.y,
+                z: channel.position.z,
             });
         }
+
+        result.push(GroupInfo {
+            id: cfg.id,
+            name: cfg.metadata.name,
+            lights,
+        });
     }
 
     Ok(result)
 }
 
+/// Activates or deactivates streaming for an entertainment configuration.
+/// Uses the v2 API with {"action": "start"} or {"action": "stop"}.
 pub async fn set_stream_active(
     config: &HueConfig,
-    group_id: &str,
+    entertainment_config_id: &str,
     active: bool,
 ) -> Result<(), HueError> {
     let client = build_client()?;
+
     let url = format!(
-        "https://{}/api/{}/groups/{}",
-        config.bridge_ip, config.username, group_id
+        "https://{}/clip/v2/resource/entertainment_configuration/{}",
+        config.bridge_ip, entertainment_config_id
     );
 
-    let body = StreamBody {
-        stream: StreamStatus { active },
+    let body = StreamAction {
+        action: if active {
+            "start".to_string()
+        } else {
+            "stop".to_string()
+        },
     };
 
-    let resp = client.put(&url).json(&body).send().await?;
+    let resp = client
+        .put(&url)
+        .header("hue-application-key", &config.username)
+        .json(&body)
+        .send()
+        .await?;
 
+    let status = resp.status();
     let response_text = resp.text().await?;
 
-    // Check if response contains error
+    if !status.is_success() {
+        return Err(HueError::ApiError(format!(
+            "Failed to {} stream: HTTP {} - {}",
+            if active { "start" } else { "stop" },
+            status,
+            response_text
+        )));
+    }
+
+    // Check for error in response body
     if response_text.contains("\"error\"") {
         return Err(HueError::ApiError(format!(
-            "Failed to activate stream: {}",
+            "Failed to {} stream: {}",
+            if active { "start" } else { "stop" },
             response_text
         )));
     }
@@ -167,6 +180,7 @@ pub async fn set_stream_active(
     Ok(())
 }
 
+/// Flash a light using the v1 API (for testing connectivity)
 pub async fn flash_light(config: &HueConfig, light_id: &str) -> Result<(), HueError> {
     let client = build_client()?;
     let url = format!(
@@ -174,7 +188,6 @@ pub async fn flash_light(config: &HueConfig, light_id: &str) -> Result<(), HueEr
         config.bridge_ip, config.username, light_id
     );
 
-    // Flash the light once (select effect)
     let body = serde_json::json!({
         "alert": "select"
     });
@@ -196,19 +209,35 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[tokio::test]
-    async fn test_parse_group_details() {
+    #[test]
+    fn test_parse_v2_entertainment_config() {
         let json = json!({
-            "name": "Entertainment Area 1",
-            "type": "Entertainment",
-            "locations": {
-                "1": [0.5, 0.0, 1.0],
-                "2": [-0.5, 0.0, 1.0]
-            }
+            "data": [{
+                "id": "1a8d99cc-967b-44f2-9202-43f976c0fa6b",
+                "type": "entertainment_configuration",
+                "metadata": { "name": "Entertainment area 1" },
+                "configuration_type": "screen",
+                "status": "inactive",
+                "channels": [
+                    {
+                        "channel_id": 0,
+                        "position": { "x": -0.6, "y": 0.8, "z": 0.0 },
+                        "members": []
+                    },
+                    {
+                        "channel_id": 1,
+                        "position": { "x": 0.6, "y": 0.8, "z": 0.0 },
+                        "members": []
+                    }
+                ]
+            }]
         });
 
-        let details: GroupDetails = serde_json::from_value(json).unwrap();
-        assert_eq!(details.locations.len(), 2);
-        assert_eq!(details.locations["1"], [0.5, 0.0, 1.0]);
+        let response: V2Response<V2EntertainmentConfig> = serde_json::from_value(json).unwrap();
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, "1a8d99cc-967b-44f2-9202-43f976c0fa6b");
+        assert_eq!(response.data[0].channels.len(), 2);
+        assert_eq!(response.data[0].channels[0].channel_id, 0);
+        assert_eq!(response.data[0].channels[1].channel_id, 1);
     }
 }
