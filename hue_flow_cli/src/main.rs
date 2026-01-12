@@ -38,6 +38,8 @@ enum Commands {
     Config,
     /// Test connection by flashing a light
     Test,
+    /// Send a static DTLS packet (Red, Full Brightness)
+    Static,
 }
 
 #[tokio::main]
@@ -51,6 +53,7 @@ async fn main() -> Result<()> {
         Some(Commands::Run { effect }) => run_stream(&effect).await,
         Some(Commands::Config) => show_config(),
         Some(Commands::Test) => run_test().await,
+        Some(Commands::Static) => run_static_test().await,
         None => {
             // Default: check if config exists, run setup or stream
             if config_path().exists() {
@@ -380,5 +383,90 @@ async fn run_test() -> Result<()> {
     } else {
         println!("❌ Configured entertainment group not found on bridge.");
     }
+    Ok(())
+}
+
+async fn run_static_test() -> Result<()> {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    let config = load_config()?;
+    let config_arc = Arc::new(config.clone());
+
+    println!("🧪 Static DTLS Test (RED Color) + Monitor...");
+    let groups = get_entertainment_groups(&config).await?;
+    let group = groups
+        .iter()
+        .find(|g| g.id == config.entertainment_group_id)
+        .context("Group not found")?;
+
+    println!("📡 Activating stream (Resetting)...");
+    set_stream_active(&config, &group.id, false).await.ok();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    set_stream_active(&config, &group.id, true).await?;
+
+    // Spawn Monitor Task
+    let group_id = group.id.clone();
+    let config_monitor = config_arc.clone();
+
+    let monitor_handle = tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+
+        loop {
+            let url = format!(
+                "https://{}/api/{}/groups/{}",
+                config_monitor.bridge_ip, config_monitor.username, group_id
+            );
+            if let Ok(resp) = client.get(&url).send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(stream) = json.get("stream") {
+                        println!("   [Monitor] Stream Status: {}", stream);
+                    } else {
+                        println!("   [Monitor] 'stream' field missing in response!");
+                        println!(
+                            "   [Monitor] Full response keys: {:?}",
+                            json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+                        );
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+    });
+
+    println!("🔒 Connecting DTLS...");
+    let mut streamer =
+        HueStreamer::connect(&config.bridge_ip, &config.username, &config.client_key)?;
+
+    let mut light_map = HashMap::new();
+    for node in &group.lights {
+        if let Ok(id) = node.id.parse::<u8>() {
+            light_map.insert(id, (255, 0, 0)); // RED
+        }
+    }
+
+    println!("🎨 Sending RED frames for 10 seconds...");
+    // Print the FIRST packet bytes for debugging
+    let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
+    println!("📦 Packet Hex Dump: {:02X?}", packet);
+
+    let mut tick_interval = interval(Duration::from_millis(100));
+    for i in 0..100 {
+        tick_interval.tick().await;
+        // Re-create packet to increment sequence number
+        let packet = hue_flow_core::stream::protocol::create_message("area", &light_map);
+        streamer.write_all(&packet)?;
+
+        // No inline logging needed, monitor does it
+        if i % 10 == 0 {
+            // println!("   > Sent 10 frames");
+        }
+    }
+
+    monitor_handle.abort();
+    set_stream_active(&config, &group.id, false).await.ok();
+    println!("✅ Test finished.");
     Ok(())
 }
